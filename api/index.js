@@ -24,7 +24,7 @@ app.use((req, res, next) => {
 });
 app.use(helmet({ contentSecurityPolicy: false })); // Disable CSP so frontend static assets still load correctly
 app.use(cors({
-  origin: process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000',
+  origin: true,
   credentials: true
 }));
 app.use(express.json({ limit: '50mb' }));
@@ -38,6 +38,15 @@ const authLimiter = rateLimit({
 const JWT_SECRET = process.env.JWT_SECRET || "fallback-dev-secret-12345";
 const UPLOADS_DIR = process.env.UPLOADS_DIR || "/tmp/local_uploads";
 const DB_FILE = process.env.DB_FILE || "/tmp/db.json";
+
+function getBaseUrl(req) {
+  const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost:3000";
+  const proto = req.headers["x-forwarded-proto"] || "https";
+  if (host.includes("localhost") || host.includes("127.0.0.1")) {
+    return `http://${host}/api`;
+  }
+  return `${proto}://${host}/api`;
+}
 
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 if (!fs.existsSync(DB_FILE))
@@ -180,7 +189,7 @@ app.post("/upload/presign", authenticate, (req, res) => {
   const { fileName } = req.body;
   const fileId = randomUUID();
   const s3Key = `${req.user.sub}/${fileId}-${fileName.replace(/\s+/g, "_")}`;
-  const uploadUrl = `http://localhost:3001/upload/local/${fileId}`;
+  const uploadUrl = `${getBaseUrl(req)}/upload/local/${fileId}`;
 
   const userDir = path.join(UPLOADS_DIR, req.user.sub);
   if (!fs.existsSync(userDir)) fs.mkdirSync(userDir, { recursive: true });
@@ -266,7 +275,7 @@ app.post("/upload/confirm", authenticate, async (req, res) => {
     s3Key,
     userId: req.user.sub,
     uploadedAt: new Date().toISOString(),
-    downloadUrl: `http://localhost:3001/download/${s3Key}`,
+    downloadUrl: `${getBaseUrl(req)}/download/${s3Key}`,
     resolution,
   };
 
@@ -561,7 +570,7 @@ app.post("/convert", authenticate, async (req, res) => {
         s3Key: newS3Key,
         userId: req.user.sub,
         uploadedAt: new Date().toISOString(),
-        downloadUrl: `http://localhost:3001/download/${newS3Key}`,
+        downloadUrl: `${getBaseUrl(req)}/download/${newS3Key}`,
       };
 
       db.transaction((data) => {
@@ -619,7 +628,7 @@ app.post("/unzip", authenticate, async (req, res) => {
         s3Key: newS3Key,
         userId: req.user.sub,
         uploadedAt: new Date().toISOString(),
-        downloadUrl: `http://localhost:3001/download/${newS3Key}`,
+        downloadUrl: `${getBaseUrl(req)}/download/${newS3Key}`,
       };
       extractedFiles.push(newFile);
     });
@@ -673,7 +682,7 @@ app.post("/compress", authenticate, async (req, res) => {
         s3Key: newS3Key,
         userId: req.user.sub,
         uploadedAt: new Date().toISOString(),
-        downloadUrl: `http://localhost:3001/download/${newS3Key}`,
+        downloadUrl: `${getBaseUrl(req)}/download/${newS3Key}`,
       };
       db.transaction((data) => {
         data.files.unshift(compressedFile);
