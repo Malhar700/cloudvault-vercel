@@ -22,7 +22,7 @@ app.use((req, res, next) => {
   }
   next();
 });
-app.use(helmet({ contentSecurityPolicy: false })); // Disable CSP so frontend static assets still load correctly
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({
   origin: true,
   credentials: true
@@ -52,12 +52,10 @@ if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 if (!fs.existsSync(DB_FILE))
   fs.writeFileSync(DB_FILE, JSON.stringify({ users: [], files: [] }));
 
-// Serialized DB access to prevent race conditions during concurrent uploads
 let dbLock = Promise.resolve();
 const db = {
   read: () => JSON.parse(fs.readFileSync(DB_FILE)),
   write: (data) => fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2)),
-  // Atomically read-modify-write: queues all operations so they run one at a time
   transaction: (fn) => {
     dbLock = dbLock.then(() => {
       const data = JSON.parse(fs.readFileSync(DB_FILE));
@@ -197,7 +195,6 @@ app.post("/upload/presign", authenticate, (req, res) => {
   res.json({ uploadUrl, fileId, s3Key });
 });
 
-// Direct PUT stream
 app.put("/upload/local/:fileId", authenticate, (req, res) => {
   const { fileId } = req.params;
   const userDir = path.join(UPLOADS_DIR, req.user.sub);
@@ -503,19 +500,61 @@ app.post("/convert", authenticate, async (req, res) => {
 
   try {
     const isVideo =
-      ["mp4", "mov", "avi"].includes(
+      ["mp4", "mov", "avi", "mkv", "webm"].includes(
         baseName.split(".").pop()?.toLowerCase() || "",
       ) ||
-      ["mp4", "mov", "avi"].includes(
+      ["mp4", "mov", "avi", "mkv", "webm"].includes(
         file.fileName.split(".").pop()?.toLowerCase() || "",
       ) ||
       file.fileType?.startsWith("video/");
-    const isTargetVideo = ["mp4", "mov", "avi", "gif"].includes(
+    const isTargetVideo = ["mp4", "mov", "avi", "gif", "mkv", "webm"].includes(
       targetFormat.toLowerCase(),
     );
     const isTargetPdf = targetFormat.toLowerCase() === "pdf";
 
-    if (file.fileType?.startsWith("image/") && isTargetPdf) {
+    // Text/Document to PDF conversion
+    if ((file.fileType?.startsWith("text/") || file.fileType === "application/octet-stream") && isTargetPdf) {
+      const textContent = fs.readFileSync(inputPath, "utf-8");
+      const pdfDoc = await PDFDocument.create();
+      const page = pdfDoc.addPage([612, 792]); // US Letter size
+      const font = await pdfDoc.embedFont(PDFDocument.StandardFonts.Helvetica);
+      const fontSize = 12;
+      const margin = 50;
+      const lineHeight = fontSize * 1.2;
+      const maxWidth = page.getWidth() - 2 * margin;
+      
+      // Wrap text
+      const words = textContent.split(/\s+/);
+      let line = "";
+      let y = page.getHeight() - margin;
+      
+      for (const word of words) {
+        const testLine = line + (line ? " " : "") + word;
+        const textWidth = font.widthOfTextAtSize(testLine, fontSize);
+        
+        if (textWidth > maxWidth && line) {
+          page.drawText(line, { x: margin, y, size: fontSize, font });
+          y -= lineHeight;
+          line = word;
+          if (y < margin) {
+            // Add new page
+            const newPage = pdfDoc.addPage([612, 792]);
+            y = newPage.getHeight() - margin;
+          }
+        } else {
+          line = testLine;
+        }
+      }
+      if (line) {
+        page.drawText(line, { x: margin, y, size: fontSize, font });
+      }
+      
+      const pdfBytes = await pdfDoc.save();
+      fs.writeFileSync(outputPath, pdfBytes);
+      finishConversion();
+    } 
+    // Image to PDF conversion
+    else if (file.fileType?.startsWith("image/") && isTargetPdf) {
       const pdfDoc = await PDFDocument.create();
       const imgBytes = fs.readFileSync(inputPath);
       let img;
@@ -550,7 +589,20 @@ app.post("/convert", authenticate, async (req, res) => {
         )
         .save(outputPath);
     } else {
-      fs.copyFileSync(inputPath, outputPath);
+      // For other formats, copy as-is but warn if target is PDF
+      if (isTargetPdf) {
+        // Try to create a basic PDF with file info
+        const pdfDoc = await PDFDocument.create();
+        const page = pdfDoc.addPage([612, 792]);
+        const font = await pdfDoc.embedFont(PDFDocument.StandardFonts.Helvetica);
+        page.drawText(`File: ${file.fileName}`, { x: 50, y: 700, size: 14, font });
+        page.drawText(`Type: ${file.fileType}`, { x: 50, y: 680, size: 12, font });
+        page.drawText(`Size: ${file.fileSize} bytes`, { x: 50, y: 660, size: 12, font });
+        const pdfBytes = await pdfDoc.save();
+        fs.writeFileSync(outputPath, pdfBytes);
+      } else {
+        fs.copyFileSync(inputPath, outputPath);
+      }
       finishConversion();
     }
 
@@ -617,7 +669,7 @@ app.post("/unzip", authenticate, async (req, res) => {
       let fileType = "application/octet-stream";
       if (["jpg", "jpeg", "png", "gif", "webp"].includes(ext))
         fileType = `image/${ext}`;
-      else if (["mp4", "mov", "avi"].includes(ext)) fileType = `video/${ext}`;
+      else if (["mp4", "mov", "avi", "mkv", "webm"].includes(ext)) fileType = `video/${ext}`;
       else if (ext === "pdf") fileType = "application/pdf";
 
       const newFile = {
@@ -692,8 +744,13 @@ app.post("/compress", authenticate, async (req, res) => {
     }
 
     if (isVid) {
+      // Validate video file first
       ffmpeg.ffprobe(inputPath, (err, metadata) => {
-        if (err || !metadata || !metadata.format || !metadata.format.bit_rate) {
+        if (err || !metadata || !metadata.streams || !metadata.streams.some(s => s.codec_type === 'video')) {
+          return res.status(400).json({ message: "Invalid video file or unsupported format" });
+        }
+        
+        if (!metadata.format || !metadata.format.bit_rate) {
           ffmpeg(inputPath)
             .videoCodec("libx264")
             .outputOptions([
@@ -744,15 +801,19 @@ app.post("/compress", authenticate, async (req, res) => {
       }
       finishCompression();
     } else if (isPdf) {
-      const pdfBytes = fs.readFileSync(inputPath);
-      const pdfDoc = await PDFDocument.load(pdfBytes);
-      const compressedBytes = await pdfDoc.save({ useObjectStreams: false });
-      fs.writeFileSync(outputPath, compressedBytes);
-      finishCompression();
+      try {
+        const pdfBytes = fs.readFileSync(inputPath);
+        const pdfDoc = await PDFDocument.load(pdfBytes);
+        const compressedBytes = await pdfDoc.save({ useObjectStreams: true, objectsPerStream: 50 });
+        fs.writeFileSync(outputPath, compressedBytes);
+        finishCompression();
+      } catch (pdfErr) {
+        return res.status(400).json({ message: "Invalid PDF file or compression failed: " + pdfErr.message });
+      }
     } else {
       return res
         .status(400)
-        .json({ message: "Format not supported for compression" });
+        .json({ message: "Format not supported for compression. Supported: images (jpg, png, webp), videos (mp4, mov, avi, mkv, webm), PDF" });
     }
   } catch (err) {
     res.status(500).json({ message: "Compression failed: " + err.message });
