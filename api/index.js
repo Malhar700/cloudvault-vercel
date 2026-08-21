@@ -8,12 +8,14 @@ const { randomUUID } = require("crypto");
 const sharp = require("sharp");
 const ffmpeg = require("fluent-ffmpeg");
 const ffmpegStatic = require("ffmpeg-static");
+const ffprobeStatic = require("ffprobe-static");
 const AdmZip = require("adm-zip");
 const { PDFDocument, StandardFonts } = require("pdf-lib");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 
 ffmpeg.setFfmpegPath(ffmpegStatic);
+ffmpeg.setFfprobePath(ffprobeStatic.path);
 
 const app = express();
 app.use((req, res, next) => {
