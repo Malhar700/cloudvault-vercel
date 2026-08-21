@@ -9,7 +9,7 @@ const sharp = require("sharp");
 const ffmpeg = require("fluent-ffmpeg");
 const ffmpegStatic = require("ffmpeg-static");
 const AdmZip = require("adm-zip");
-const { PDFDocument } = require("pdf-lib");
+const { PDFDocument, StandardFonts } = require("pdf-lib");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 
@@ -517,7 +517,7 @@ app.post("/convert", authenticate, async (req, res) => {
       const textContent = fs.readFileSync(inputPath, "utf-8");
       const pdfDoc = await PDFDocument.create();
       const page = pdfDoc.addPage([612, 792]); // US Letter size
-      const font = await pdfDoc.embedFont(PDFDocument.StandardFonts.Helvetica);
+      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
       const fontSize = 12;
       const margin = 50;
       const lineHeight = fontSize * 1.2;
@@ -594,7 +594,7 @@ app.post("/convert", authenticate, async (req, res) => {
         // Try to create a basic PDF with file info
         const pdfDoc = await PDFDocument.create();
         const page = pdfDoc.addPage([612, 792]);
-        const font = await pdfDoc.embedFont(PDFDocument.StandardFonts.Helvetica);
+        const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
         page.drawText(`File: ${file.fileName}`, { x: 50, y: 700, size: 14, font });
         page.drawText(`Type: ${file.fileType}`, { x: 50, y: 680, size: 12, font });
         page.drawText(`Size: ${file.fileSize} bytes`, { x: 50, y: 660, size: 12, font });
